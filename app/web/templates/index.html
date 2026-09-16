@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Radial</title>
+  <meta name="theme-color" content="#100c0a">
+  <link rel="manifest" href="/static/manifest.json">
+  <link rel="icon" href="/static/icons/icon-192.png">
+  <link rel="apple-touch-icon" href="/static/icons/icon-192.png">
+  <link rel="stylesheet" href="/static/css/app.css">
+  <script src="/static/js/app.js" type="module"></script>
+</head>
+<body>
+  <div class="app" id="app">
+    <div class="sidebar-scrim" id="sidebar-scrim" hidden></div>
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar__head">
+        <div class="brand">
+          <svg class="mark" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <defs>
+              <linearGradient id="radialBeam" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stop-color="#f59e0b"/>
+                <stop offset="100%" stop-color="#f43f5e"/>
+              </linearGradient>
+            </defs>
+            <circle cx="12" cy="12" r="3" fill="url(#radialBeam)"/>
+            <circle cx="12" cy="12" r="7" fill="none" stroke="url(#radialBeam)" stroke-width="1.5" opacity="0.6"/>
+            <circle cx="12" cy="12" r="10.5" fill="none" stroke="url(#radialBeam)" stroke-width="1.25" opacity="0.3"/>
+          </svg>
+          <span class="brand__name">Radial</span>
+        </div>
+      </div>
+
+      <nav class="sidebar__nav">
+        <button type="button" class="nav-item is-active" data-view="board">Backlog</button>
+        <button type="button" class="nav-item" data-view="plaky">Plaky</button>
+        <button type="button" class="nav-item" data-view="log">Sync log</button>
+      </nav>
+
+      <div class="sidebar__foot">
+        <span class="chip" id="plaky-status">
+          <span class="chip__dot"></span>
+          <span class="chip__label">Checking…</span>
+        </span>
+        <button type="button" id="board-picker-button" class="board-picker">
+          <span class="board-picker__label" id="board-picker-label">No board set</span>
+          <span class="board-picker__change">Change</span>
+        </button>
+        <button type="button" id="pull-button" class="btn btn--ghost btn--sm">Pull from Plaky</button>
+        <p class="sidebar__hint" id="auto-pull-hint"></p>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <button type="button" id="drawer-toggle" class="icon-btn drawer-toggle" aria-label="Toggle menu">&#9776;</button>
+        <h1 class="topbar__title" id="view-title">Backlog</h1>
+        <button type="button" id="new-item-button" class="btn btn--primary">+ New item</button>
+      </header>
+
+      <section class="view" id="view-board">
+        <div class="board" id="board-columns"></div>
+      </section>
+
+      <section class="view" id="view-plaky" hidden>
+        <div class="plaky-browser">
+          <div class="plaky-browser__filters">
+            <select id="plaky-space-select" class="select"><option value="">All spaces…</option></select>
+            <select id="plaky-board-select" class="select" disabled><option value="">All boards…</option></select>
+          </div>
+          <div class="plaky-list" id="plaky-item-list"></div>
+        </div>
+      </section>
+
+      <section class="view" id="view-log" hidden>
+        <div class="log-list" id="sync-log-list"></div>
+      </section>
+    </main>
+  </div>
+
+  <div class="modal-scrim" id="modal-scrim" hidden>
+    <div class="modal" id="item-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <div class="modal__head">
+        <h2 id="modal-title">New item</h2>
+        <button type="button" class="icon-btn" id="modal-close" aria-label="Close">&times;</button>
+      </div>
+      <div class="modal__body">
+        <label class="field">
+          <span>Title</span>
+          <input type="text" id="field-title" maxlength="255" required>
+        </label>
+        <label class="field">
+          <span>Description</span>
+          <textarea id="field-description" rows="4" maxlength="8000"></textarea>
+        </label>
+        <div class="field-row">
+          <label class="field">
+            <span>Priority</span>
+            <select id="field-priority" class="select">
+              <option value="low">Low</option>
+              <option value="medium" selected>Medium</option>
+              <option value="high">High</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Section</span>
+            <select id="field-group" class="select">
+              <option value="">Unsorted</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="push-section" id="push-section" hidden>
+          <h3>Plaky</h3>
+          <p class="push-section__note" id="push-linked-note" hidden></p>
+          <button type="button" id="push-button" class="btn btn--primary btn--sm">Push to Plaky</button>
+        </div>
+      </div>
+      <div class="modal__foot">
+        <button type="button" id="delete-button" class="btn btn--danger-ghost">Delete</button>
+        <button type="button" id="save-button" class="btn btn--primary">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-scrim" id="board-modal-scrim" hidden>
+    <div class="modal" id="board-modal" role="dialog" aria-modal="true" aria-labelledby="board-modal-title">
+      <div class="modal__head">
+        <h2 id="board-modal-title">Choose your home board</h2>
+        <button type="button" class="icon-btn" id="board-modal-close" aria-label="Close">&times;</button>
+      </div>
+      <div class="modal__body">
+        <p class="push-section__note">The backlog's sections come from this board's real columns in Plaky.</p>
+        <div class="field-row">
+          <label class="field">
+            <span>Space</span>
+            <select id="board-modal-space" class="select"><option value="">Select…</option></select>
+          </label>
+          <label class="field">
+            <span>Board</span>
+            <select id="board-modal-board" class="select" disabled><option value="">Select…</option></select>
+          </label>
+        </div>
+        <p class="push-section__note push-section__note--warning" id="board-modal-warning" hidden>
+          Switching to a different board moves every item currently in a section back to Unsorted —
+          their old sections belong to the board you're leaving.
+        </p>
+      </div>
+      <div class="modal__foot">
+        <span></span>
+        <button type="button" id="board-modal-save" class="btn btn--primary" disabled>Save</button>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
