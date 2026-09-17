@@ -202,7 +202,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="not found")
         return _backlog_to_json(item)
 
-    @app.delete("/api/backlog/{item_id}", status_code=204)
+    @app.delete("/api/backlog/{item_id}", status_code=204, response_model=None)
     async def delete_backlog(request: Request, item_id: str) -> None:
         ok = await db(request).delete_backlog_item(item_id)
         if not ok:
