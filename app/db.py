@@ -491,7 +491,7 @@ class Database:
 
     async def list_sync_log(self, limit: int = 50) -> list[SyncLogEntry]:
         async with self.conn.execute(
-            "SELECT * FROM sync_log ORDER BY created_at DESC LIMIT ?;", (max(1, min(limit, 500)),)
+            "SELECT * FROM sync_log ORDER BY created_at DESC, rowid DESC LIMIT ?;", (max(1, min(limit, 500)),)
         ) as cur:
             rows = await cur.fetchall()
         return [_row_to_sync_log(r) for r in rows]

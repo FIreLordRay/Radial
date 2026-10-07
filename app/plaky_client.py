@@ -34,9 +34,17 @@ class PlakyApiError(Exception):
 
 
 class PlakyClient:
-    def __init__(self, *, api_key: str, base_url: str = "https://api.plaky.com", timeout_s: float = 15.0) -> None:
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        base_url: str = "https://api.plaky.com",
+        timeout_s: float = 15.0,
+        transport: httpx.AsyncBaseTransport | None = None,  # tests: route to a fake Plaky
+    ) -> None:
         self._client = httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
+            transport=transport,
             headers={"X-API-Key": api_key, "Accept": "application/json"},
             timeout=timeout_s,
             trust_env=False,

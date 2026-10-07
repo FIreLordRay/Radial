@@ -61,6 +61,25 @@ python -m app.main       # or: run.cmd on Windows
 Open `http://localhost:5100`. First thing to do: click **Pull from Plaky**, then set a
 **home board** (the sidebar's board picker) — that board's sections become your backlog columns.
 
+## Tests
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest
+```
+
+25 tests, ~3 seconds, no network and no `.env`: the app is built with explicit test settings
+(temp SQLite file) and every Plaky call is routed through an httpx `ASGITransport` into
+`tests/fake_plaky.py`, an in-process fake written against Plaky's published OpenAPI spec. The
+fake is strict on purpose (integer `groupId`/`itemGroupId`, `{"value": ...}` field bodies,
+multipart uploads, bare-array vs paged responses, the `X-API-Key` header), so a wiring mistake
+fails the suite the same way it would fail against real Plaky.
+
+Covered: local sections and backlog CRUD, pagination across pages, bad-key handling, home-board
+switching, push, every live-view write (move, field update, create, comment, upload), the
+activity feed, the sync log, and regressions for both launch bugs (`python -m app.main` and the
+hidden `pythonw` launcher).
+
 ## Architecture
 
 Same shape as `ray-chat`/`raybot`: FastAPI + SQLite (`aiosqlite`) + vanilla JS, no build step,

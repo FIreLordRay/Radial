@@ -29,6 +29,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncIterator, Literal
 
+import httpx
 import uvicorn
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
@@ -93,11 +94,13 @@ class HomeBoardRequest(BaseModel):
     board_id: str
 
 
-def _new_client(settings: Settings) -> PlakyClient:
+def _new_client(settings: Settings, transport: httpx.AsyncBaseTransport | None = None) -> PlakyClient:
     if not settings.plaky_configured:
         raise HTTPException(status_code=409, detail="Plaky is not configured (set PLAKY_API_KEY in .env).")
     assert settings.plaky_api_key is not None
-    return PlakyClient(api_key=settings.plaky_api_key.get_secret_value(), base_url=settings.plaky_base_url)
+    return PlakyClient(
+        api_key=settings.plaky_api_key.get_secret_value(), base_url=settings.plaky_base_url, transport=transport
+    )
 
 
 async def _auto_pull_loop(db: Database, settings: Settings) -> None:
@@ -111,9 +114,7 @@ async def _auto_pull_loop(db: Database, settings: Settings) -> None:
         return
     while True:
         try:
-            async with PlakyClient(
-                api_key=settings.plaky_api_key.get_secret_value(), base_url=settings.plaky_base_url  # type: ignore[union-attr]
-            ) as client:
+            async with _new_client(settings) as client:
                 counts = await pull_all(db, client)
             logger.info("radial.auto_pull.ok", extra={"counts": counts})
         except asyncio.CancelledError:
@@ -125,8 +126,13 @@ async def _auto_pull_loop(db: Database, settings: Settings) -> None:
         await asyncio.sleep(settings.auto_pull_interval_seconds)
 
 
-def create_app() -> FastAPI:
-    settings = get_settings()
+def create_app(
+    settings: Settings | None = None, *, plaky_transport: httpx.AsyncBaseTransport | None = None
+) -> FastAPI:
+    """Build the app. Tests pass their own Settings (temp DB, fake key) and an
+    httpx transport that routes Plaky calls to an in-process fake, so the test
+    suite never reads .env or touches the network."""
+    settings = settings or get_settings()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -283,7 +289,7 @@ def create_app() -> FastAPI:
 
     @app.post("/api/backlog/{item_id}/push")
     async def push_item(request: Request, item_id: str) -> dict[str, Any]:
-        async with _new_client(settings) as client:
+        async with _new_client(settings, plaky_transport) as client:
             try:
                 await push_backlog_item(db(request), client, item_id=item_id)
             except ValueError as exc:
@@ -326,7 +332,7 @@ def create_app() -> FastAPI:
     @app.get("/api/live/board")
     async def live_board(request: Request) -> dict[str, Any]:
         space_id, board_id = await _live_target(request)
-        async with _new_client(settings) as client:
+        async with _new_client(settings, plaky_transport) as client:
             board = await client.get_board(space_id, board_id)
             items = await client.list_items_with_fields(space_id, board_id)
             try:
@@ -360,7 +366,7 @@ def create_app() -> FastAPI:
     async def live_create(request: Request, payload: LiveCreateRequest) -> dict[str, Any]:
         space_id, board_id = await _live_target(request)
         title = payload.title.strip()
-        async with _new_client(settings) as client:
+        async with _new_client(settings, plaky_transport) as client:
             created = await client.create_item(space_id=space_id, board_id=board_id, title=title, group_id=payload.group_id)
         await _log_push(request, str(created.get("id")), f"created '{title}'")
         return {"id": str(created.get("id"))}
@@ -368,7 +374,7 @@ def create_app() -> FastAPI:
     @app.patch("/api/live/items/{item_id}/group")
     async def live_move(request: Request, item_id: str, payload: LiveMoveRequest) -> dict[str, Any]:
         space_id, board_id = await _live_target(request)
-        async with _new_client(settings) as client:
+        async with _new_client(settings, plaky_transport) as client:
             await client.move_item_to_group(
                 space_id=space_id, board_id=board_id, item_id=item_id, group_id=payload.group_id
             )
@@ -378,7 +384,7 @@ def create_app() -> FastAPI:
     @app.patch("/api/live/items/{item_id}/fields/{field_key}")
     async def live_field(request: Request, item_id: str, field_key: str, payload: LiveFieldRequest) -> dict[str, Any]:
         space_id, board_id = await _live_target(request)
-        async with _new_client(settings) as client:
+        async with _new_client(settings, plaky_transport) as client:
             await client.update_item_field(
                 space_id=space_id,
                 board_id=board_id,
@@ -392,7 +398,7 @@ def create_app() -> FastAPI:
     @app.get("/api/live/items/{item_id}/activity")
     async def live_activity(request: Request, item_id: str) -> dict[str, Any]:
         space_id, board_id = await _live_target(request)
-        async with _new_client(settings) as client:
+        async with _new_client(settings, plaky_transport) as client:
             comments = await client.list_comments(space_id, board_id, item_id)
             files = await client.list_files(space_id, board_id, item_id)
             users = await _users(client)
@@ -421,7 +427,7 @@ def create_app() -> FastAPI:
     @app.post("/api/live/items/{item_id}/comments", status_code=201)
     async def live_comment(request: Request, item_id: str, payload: LiveCommentRequest) -> dict[str, Any]:
         space_id, board_id = await _live_target(request)
-        async with _new_client(settings) as client:
+        async with _new_client(settings, plaky_transport) as client:
             await client.create_comment(space_id=space_id, board_id=board_id, item_id=item_id, text=payload.text.strip())
         await _log_push(request, item_id, "commented")
         return {"ok": True}
@@ -433,7 +439,7 @@ def create_app() -> FastAPI:
         if len(content) > _MAX_UPLOAD_BYTES:
             raise HTTPException(status_code=413, detail="File is over 50 MB.")
         name = file.filename or "upload"
-        async with _new_client(settings) as client:
+        async with _new_client(settings, plaky_transport) as client:
             await client.upload_file(
                 space_id=space_id,
                 board_id=board_id,
@@ -449,7 +455,7 @@ def create_app() -> FastAPI:
 
     @app.post("/api/sync/pull")
     async def sync_pull(request: Request) -> dict[str, Any]:
-        async with _new_client(settings) as client:
+        async with _new_client(settings, plaky_transport) as client:
             try:
                 counts = await pull_all(db(request), client)
             except PlakyApiError as exc:
