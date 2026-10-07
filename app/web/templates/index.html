@@ -4,11 +4,14 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Radial</title>
-  <meta name="theme-color" content="#100c0a">
+  <meta name="theme-color" content="#14161b">
   <link rel="manifest" href="/static/manifest.json">
   <link rel="icon" href="/static/icons/icon-192.png">
   <link rel="apple-touch-icon" href="/static/icons/icon-192.png">
   <link rel="stylesheet" href="/static/css/app.css">
+  <script>
+    try { const h = localStorage.getItem("radial.hue"); if (h) document.documentElement.style.setProperty("--hue", h); } catch {}
+  </script>
   <script src="/static/js/app.js" type="module"></script>
 </head>
 <body>
@@ -20,8 +23,8 @@
           <svg class="mark" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
             <defs>
               <linearGradient id="radialBeam" x1="0%" y1="0%" x2="100%" y2="100%">
-                <stop offset="0%" stop-color="#f59e0b"/>
-                <stop offset="100%" stop-color="#f43f5e"/>
+                <stop offset="0%" style="stop-color: var(--accent)"/>
+                <stop offset="100%" style="stop-color: var(--accent-2)"/>
               </linearGradient>
             </defs>
             <circle cx="12" cy="12" r="3" fill="url(#radialBeam)"/>
@@ -32,31 +35,80 @@
         </div>
       </div>
 
-      <nav class="sidebar__nav">
-        <button type="button" class="nav-item is-active" data-view="board">Backlog</button>
-        <button type="button" class="nav-item" data-view="plaky">Plaky</button>
-        <button type="button" class="nav-item" data-view="log">Sync log</button>
+      <nav class="sidebar__nav" aria-label="Views">
+        <span class="sidebar__label">Workspace</span>
+        <button type="button" class="nav-item is-active" data-view="board" data-icon="board">
+          <span class="nav-item__text">Backlog</span>
+          <span class="nav-item__count" id="count-board"></span>
+        </button>
+        <button type="button" class="nav-item" data-view="plaky" data-icon="live">
+          <span class="nav-item__text">Plaky (live)</span>
+          <span class="nav-item__count" id="count-plaky"></span>
+        </button>
+        <button type="button" class="nav-item" data-view="log" data-icon="log">
+          <span class="nav-item__text">Sync log</span>
+        </button>
       </nav>
 
       <div class="sidebar__foot">
-        <span class="chip" id="plaky-status">
-          <span class="chip__dot"></span>
-          <span class="chip__label">Checking…</span>
-        </span>
-        <button type="button" id="board-picker-button" class="board-picker">
-          <span class="board-picker__label" id="board-picker-label">No board set</span>
-          <span class="board-picker__change">Change</span>
-        </button>
-        <button type="button" id="pull-button" class="btn btn--ghost btn--sm">Pull from Plaky</button>
-        <p class="sidebar__hint" id="auto-pull-hint"></p>
+        <div class="conn" id="conn">
+          <div class="conn__row">
+            <span class="chip" id="plaky-status">
+              <span class="chip__dot"></span>
+              <span class="chip__label">Checking…</span>
+            </span>
+            <button type="button" id="pull-button" class="icon-btn icon-btn--sm" data-icon="sync" aria-label="Pull from Plaky now" title="Pull from Plaky now" hidden></button>
+          </div>
+          <div class="sidebar__plaky" id="plaky-controls" hidden>
+            <button type="button" id="board-picker-button" class="board-picker" title="Change board">
+              <span class="board-picker__text">
+                <span class="board-picker__label" id="board-picker-label">Local sections</span>
+                <span class="board-picker__space" id="board-picker-space"></span>
+              </span>
+              <span class="board-picker__change">Change</span>
+            </button>
+            <p class="sidebar__hint" id="auto-pull-hint"></p>
+          </div>
+        </div>
+        <div class="swatches" id="swatches" role="group" aria-label="Accent color">
+          <span class="swatches__label">Accent</span>
+        </div>
+        <p class="sidebar__keys"><kbd>N</kbd> new <kbd>/</kbd> search <kbd>Esc</kbd> close</p>
       </div>
     </aside>
 
     <main class="main">
+      <!-- Radial mark as a faint background watermark; recolors with the accent. -->
+      <div class="bg-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <linearGradient id="bgBeam" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" style="stop-color: var(--accent)"/>
+              <stop offset="100%" style="stop-color: var(--accent-2)"/>
+            </linearGradient>
+          </defs>
+          <circle class="bg-mark__ripple" cx="12" cy="12" r="3" fill="none" stroke="url(#bgBeam)" stroke-width="0.35"/>
+          <circle cx="12" cy="12" r="3" fill="url(#bgBeam)"/>
+          <circle cx="12" cy="12" r="7" fill="none" stroke="url(#bgBeam)" stroke-width="1.5" opacity="0.6"/>
+          <circle cx="12" cy="12" r="10.5" fill="none" stroke="url(#bgBeam)" stroke-width="1.25" opacity="0.3"/>
+        </svg>
+      </div>
       <header class="topbar">
-        <button type="button" id="drawer-toggle" class="icon-btn drawer-toggle" aria-label="Toggle menu">&#9776;</button>
-        <h1 class="topbar__title" id="view-title">Backlog</h1>
-        <button type="button" id="new-item-button" class="btn btn--primary">+ New item</button>
+        <button type="button" id="drawer-toggle" class="icon-btn drawer-toggle" data-icon="menu" aria-label="Open menu"></button>
+        <div class="topbar__heading">
+          <h1 class="topbar__title" id="view-title">Backlog</h1>
+          <div class="topbar__sub">
+            <span id="view-sub"></span>
+            <span class="live-status" id="live-status"></span>
+          </div>
+        </div>
+        <label class="search">
+          <span class="search__icon" data-icon="search"></span>
+          <input type="search" id="search" placeholder="Search items" aria-label="Search items">
+          <kbd class="search__kbd">/</kbd>
+        </label>
+        <button type="button" id="live-refresh" class="icon-btn" data-icon="sync" aria-label="Refresh from Plaky" title="Refresh from Plaky" hidden></button>
+        <button type="button" id="new-item-button" class="btn btn--primary" data-fx><span data-icon="plus"></span><span class="btn__label">New item</span></button>
       </header>
 
       <section class="view" id="view-board">
@@ -64,13 +116,14 @@
       </section>
 
       <section class="view" id="view-plaky" hidden>
-        <div class="plaky-browser">
-          <div class="plaky-browser__filters">
-            <select id="plaky-space-select" class="select"><option value="">All spaces…</option></select>
-            <select id="plaky-board-select" class="select" disabled><option value="">All boards…</option></select>
-          </div>
-          <div class="plaky-list" id="plaky-item-list"></div>
+        <span class="visually-hidden" id="live-title"></span>
+        <div class="empty-state" id="live-empty" hidden>
+          <div class="empty-state__icon" data-icon="live"></div>
+          <h2>Watch a Plaky board</h2>
+          <p>Pick a board and its columns and items show up here, refreshed every 15 seconds. Move cards, update fields, comment and turn in work without leaving Radial.</p>
+          <button type="button" id="live-pick-board" class="btn btn--primary" data-fx>Pick a board</button>
         </div>
+        <div class="board" id="live-columns"></div>
       </section>
 
       <section class="view" id="view-log" hidden>
@@ -79,20 +132,21 @@
     </main>
   </div>
 
+  <!-- Backlog item (local) -->
   <div class="modal-scrim" id="modal-scrim" hidden>
     <div class="modal" id="item-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
       <div class="modal__head">
         <h2 id="modal-title">New item</h2>
-        <button type="button" class="icon-btn" id="modal-close" aria-label="Close">&times;</button>
+        <button type="button" class="icon-btn" id="modal-close" data-icon="close" aria-label="Close"></button>
       </div>
       <div class="modal__body">
         <label class="field">
           <span>Title</span>
-          <input type="text" id="field-title" maxlength="255" required>
+          <input type="text" id="field-title" maxlength="255" required placeholder="What needs doing?">
         </label>
         <label class="field">
           <span>Description</span>
-          <textarea id="field-description" rows="4" maxlength="8000"></textarea>
+          <textarea id="field-description" rows="4" maxlength="8000" placeholder="Optional. Ctrl+Enter saves."></textarea>
         </label>
         <div class="field-row">
           <label class="field">
@@ -113,25 +167,26 @@
 
         <div class="push-section" id="push-section" hidden>
           <h3>Plaky</h3>
-          <p class="push-section__note" id="push-linked-note" hidden></p>
-          <button type="button" id="push-button" class="btn btn--primary btn--sm">Push to Plaky</button>
+          <p class="note" id="push-linked-note" hidden></p>
+          <div><button type="button" id="push-button" class="btn btn--ghost btn--sm">Push to Plaky</button></div>
         </div>
       </div>
       <div class="modal__foot">
         <button type="button" id="delete-button" class="btn btn--danger-ghost">Delete</button>
-        <button type="button" id="save-button" class="btn btn--primary">Save</button>
+        <button type="button" id="save-button" class="btn btn--primary" data-fx>Save</button>
       </div>
     </div>
   </div>
 
+  <!-- Board picker -->
   <div class="modal-scrim" id="board-modal-scrim" hidden>
     <div class="modal" id="board-modal" role="dialog" aria-modal="true" aria-labelledby="board-modal-title">
       <div class="modal__head">
-        <h2 id="board-modal-title">Choose your home board</h2>
-        <button type="button" class="icon-btn" id="board-modal-close" aria-label="Close">&times;</button>
+        <h2 id="board-modal-title">Choose a Plaky board</h2>
+        <button type="button" class="icon-btn" id="board-modal-close" data-icon="close" aria-label="Close"></button>
       </div>
       <div class="modal__body">
-        <p class="push-section__note">The backlog's sections come from this board's real columns in Plaky.</p>
+        <p class="note note--muted">The live view watches this board, and your backlog's columns become its columns.</p>
         <div class="field-row">
           <label class="field">
             <span>Space</span>
@@ -142,16 +197,74 @@
             <select id="board-modal-board" class="select" disabled><option value="">Select…</option></select>
           </label>
         </div>
-        <p class="push-section__note push-section__note--warning" id="board-modal-warning" hidden>
-          Switching to a different board moves every item currently in a section back to Unsorted —
-          their old sections belong to the board you're leaving.
+        <p class="note note--warning" id="board-modal-warning" hidden>
+          Switching boards moves every backlog item that's in a section back to Unsorted, since those
+          sections belong to the board you're leaving.
         </p>
       </div>
       <div class="modal__foot">
+        <button type="button" id="board-modal-local" class="btn btn--ghost" hidden>Use local sections</button>
         <span></span>
-        <button type="button" id="board-modal-save" class="btn btn--primary" disabled>Save</button>
+        <button type="button" id="board-modal-save" class="btn btn--primary" data-fx disabled>Save</button>
       </div>
     </div>
   </div>
+
+  <!-- Plaky item: slide-over drawer so the board stays visible -->
+  <div class="drawer-scrim" id="live-modal-scrim" hidden>
+    <aside class="drawer" role="dialog" aria-modal="true" aria-labelledby="live-modal-title">
+      <header class="drawer__head">
+        <div class="drawer__heading">
+          <span class="drawer__eyebrow" id="live-crumb"></span>
+          <h2 id="live-modal-title"></h2>
+        </div>
+        <button type="button" class="icon-btn" id="live-modal-close" data-icon="close" aria-label="Close"></button>
+      </header>
+
+      <div class="drawer__body">
+        <div class="drawer__actions">
+          <label class="field field--inline">
+            <span>Column</span>
+            <select id="live-group" class="select"></select>
+          </label>
+          <button type="button" id="live-done" class="btn btn--primary" data-fx><span data-icon="check"></span><span id="live-done-label">Mark done</span></button>
+        </div>
+
+        <section class="drawer__section">
+          <h3>Details</h3>
+          <div class="live-fields" id="live-fields"></div>
+          <p class="note note--muted">To rename an item, do it in Plaky; its API doesn't allow renames.</p>
+        </section>
+
+        <section class="drawer__section">
+          <h3>Turn in</h3>
+          <div class="live-fields" id="live-turnin"></div>
+          <label class="dropzone" id="live-drop">
+            <input type="file" id="live-file" class="visually-hidden">
+            <span class="dropzone__icon" data-icon="upload"></span>
+            <span class="dropzone__text"><strong>Drop a file</strong> or click to upload</span>
+            <span class="dropzone__hint" id="live-upload-status">Up to 50 MB</span>
+          </label>
+          <p class="empty-hint" id="live-activity-hint" hidden></p>
+          <ul class="file-list" id="live-files"></ul>
+        </section>
+
+        <section class="drawer__section drawer__section--grow">
+          <h3>Comments</h3>
+          <ul class="thread" id="live-comments"></ul>
+        </section>
+      </div>
+
+      <footer class="composer">
+        <textarea id="live-comment-text" rows="2" maxlength="10000" placeholder="Write a comment or paste a link…" aria-label="Comment"></textarea>
+        <div class="composer__row">
+          <span class="composer__hint"><kbd>Ctrl</kbd>+<kbd>Enter</kbd> to post</span>
+          <button type="button" id="live-comment-post" class="btn btn--primary btn--sm">Post</button>
+        </div>
+      </footer>
+    </aside>
+  </div>
+
+  <div class="toasts" id="toasts" aria-live="polite"></div>
 </body>
 </html>

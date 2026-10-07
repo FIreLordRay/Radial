@@ -56,6 +56,15 @@ CREATE INDEX IF NOT EXISTS ix_backlog_group ON backlog_items(group_id, updated_a
 CREATE UNIQUE INDEX IF NOT EXISTS ux_backlog_plaky_item ON backlog_items(plaky_item_id)
     WHERE plaky_item_id IS NOT NULL;
 
+-- Radial's own columns, used whenever no Plaky home board is set. Ids are
+-- always "local-..." so they can never collide with a real Plaky group id
+-- (push refuses to send an item that's sitting in one of these).
+CREATE TABLE IF NOT EXISTS local_sections (
+    id         TEXT PRIMARY KEY,
+    title      TEXT NOT NULL,
+    position   INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS plaky_spaces (
     id         TEXT PRIMARY KEY,
     name       TEXT NOT NULL,
@@ -107,6 +116,11 @@ _PRAGMAS: Final[tuple[str, ...]] = (
     "PRAGMA busy_timeout = 5000;",
     "PRAGMA synchronous = NORMAL;",
 )
+
+
+_DEFAULT_LOCAL_SECTIONS: Final[tuple[str, ...]] = ("To do", "In progress", "Done")
+
+LOCAL_SECTION_PREFIX: Final[str] = "local-"
 
 
 def new_id() -> str:
@@ -211,6 +225,18 @@ class Database:
             await conn.execute(pragma)
         await conn.executescript(SCHEMA_SQL)
         self._conn = conn
+        await self._seed_local_sections()
+
+    async def _seed_local_sections(self) -> None:
+        """Give a brand-new install real columns to work with before Plaky is ever set up."""
+        if await self.get_setting("local_sections_seeded"):
+            return
+        for position, title in enumerate(_DEFAULT_LOCAL_SECTIONS):
+            await self.conn.execute(
+                "INSERT INTO local_sections (id, title, position) VALUES (?, ?, ?);",
+                (LOCAL_SECTION_PREFIX + new_id(), title, position),
+            )
+        await self.set_setting("local_sections_seeded", "1")
 
     async def close(self) -> None:
         if self._conn is not None:
@@ -314,7 +340,42 @@ class Database:
         row = await self._fetch_backlog_row(item_id)
         return None if row is None else _row_to_backlog_item(row)
 
-    # ---- settings (currently just the "home board") ------------------------
+    # ---- local sections ---------------------------------------------------
+
+    async def list_local_sections(self) -> list[dict[str, Any]]:
+        async with self.conn.execute("SELECT id, title FROM local_sections ORDER BY position, rowid;") as cur:
+            rows = await cur.fetchall()
+        return [{"id": r["id"], "title": r["title"]} for r in rows]
+
+    async def create_local_section(self, title: str) -> dict[str, Any]:
+        section_id = LOCAL_SECTION_PREFIX + new_id()
+        await self.conn.execute(
+            "INSERT INTO local_sections (id, title, position) "
+            "VALUES (?, ?, (SELECT COALESCE(MAX(position), -1) + 1 FROM local_sections));",
+            (section_id, title),
+        )
+        return {"id": section_id, "title": title}
+
+    async def rename_local_section(self, section_id: str, title: str) -> bool:
+        cur = await self.conn.execute("UPDATE local_sections SET title = ? WHERE id = ?;", (title, section_id))
+        return cur.rowcount > 0
+
+    async def delete_local_section(self, section_id: str) -> bool:
+        """Delete a column; its items fall back to Unsorted rather than vanishing."""
+        conn = self.conn
+        await conn.execute("BEGIN IMMEDIATE;")
+        try:
+            cur = await conn.execute("DELETE FROM local_sections WHERE id = ?;", (section_id,))
+            await conn.execute(
+                "UPDATE backlog_items SET group_id = NULL, updated_at = ? WHERE group_id = ?;", (_now(), section_id)
+            )
+            await conn.execute("COMMIT;")
+        except BaseException:
+            await conn.execute("ROLLBACK;")
+            raise
+        return cur.rowcount > 0
+
+    # ---- settings (home board, seeding flags) -----------------------------
 
     async def get_setting(self, key: str) -> str | None:
         async with self.conn.execute("SELECT value FROM app_settings WHERE key = ?;", (key,)) as cur:
@@ -327,6 +388,9 @@ class Database:
             "ON CONFLICT(key) DO UPDATE SET value = excluded.value;",
             (key, value),
         )
+
+    async def delete_setting(self, key: str) -> None:
+        await self.conn.execute("DELETE FROM app_settings WHERE key = ?;", (key,))
 
     # ---- Plaky cache (wholesale-replaced on pull) --------------------------
 

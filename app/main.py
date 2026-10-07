@@ -21,13 +21,16 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
+from urllib.parse import quote
 import logging
+import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncIterator, Literal
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -36,7 +39,7 @@ from pydantic import BaseModel, Field
 from app.config import Settings, get_settings
 from app.db import Database
 from app.plaky_client import PlakyApiError, PlakyClient
-from app.sync import get_home_board, pull_all, push_backlog_item, set_home_board
+from app.sync import clear_home_board, get_home_board, pull_all, push_backlog_item, set_home_board
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("radial")
@@ -58,6 +61,31 @@ class BacklogUpdate(BaseModel):
     description: str | None = Field(default=None, max_length=8000)
     priority: Literal["low", "medium", "high"] | None = None
     group_id: str | None = None
+
+
+class SectionRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=80)
+
+
+class LiveCreateRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=255)
+    group_id: str
+
+
+class LiveMoveRequest(BaseModel):
+    group_id: str
+
+
+class LiveFieldRequest(BaseModel):
+    value: Any = None
+
+
+class LiveCommentRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=10000)
+
+
+_MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+_USERS_TTL_S = 600
 
 
 class HomeBoardRequest(BaseModel):
@@ -121,6 +149,14 @@ def create_app() -> FastAPI:
     app = FastAPI(title="Radial", lifespan=lifespan)
     app.state.settings = settings
 
+    @app.middleware("http")
+    async def _revalidate(request: Request, call_next):
+        # Local app, tiny assets: always revalidate (ETag makes it a cheap 304)
+        # so an update never leaves the browser running yesterday's JS.
+        response = await call_next(request)
+        response.headers.setdefault("Cache-Control", "no-cache")
+        return response
+
     app.mount("/static", StaticFiles(directory=_APP_DIR / "web" / "static"), name="static")
     templates = Jinja2Templates(directory=_APP_DIR / "web" / "templates")
 
@@ -161,6 +197,43 @@ def create_app() -> FastAPI:
     async def set_home_board_route(request: Request, payload: HomeBoardRequest) -> dict[str, Any]:
         await set_home_board(db(request), space_id=payload.space_id, board_id=payload.board_id)
         return {"home": {"space_id": payload.space_id, "board_id": payload.board_id}}
+
+    @app.delete("/api/settings/home-board")
+    async def clear_home_board_route(request: Request) -> dict[str, Any]:
+        await clear_home_board(db(request))
+        return {"home": None}
+
+    # ---- sections (the backlog's columns) ------------------------------------
+
+    @app.get("/api/sections")
+    async def list_sections(request: Request) -> dict[str, Any]:
+        """The current columns: the home board's real Plaky groups, else Radial's local ones."""
+        home = await get_home_board(db(request))
+        if home is not None:
+            return {"source": "plaky", "sections": await db(request).list_plaky_groups(home["board_id"])}
+        return {"source": "local", "sections": await db(request).list_local_sections()}
+
+    async def _require_local_mode(request: Request) -> None:
+        if await get_home_board(db(request)) is not None:
+            raise HTTPException(status_code=409, detail="sections come from your Plaky home board; edit them in Plaky")
+
+    @app.post("/api/sections", status_code=201)
+    async def create_section(request: Request, payload: SectionRequest) -> dict[str, Any]:
+        await _require_local_mode(request)
+        return await db(request).create_local_section(payload.title.strip())
+
+    @app.patch("/api/sections/{section_id}")
+    async def rename_section(request: Request, section_id: str, payload: SectionRequest) -> dict[str, Any]:
+        await _require_local_mode(request)
+        if not await db(request).rename_local_section(section_id, payload.title.strip()):
+            raise HTTPException(status_code=404, detail="not found")
+        return {"id": section_id, "title": payload.title.strip()}
+
+    @app.delete("/api/sections/{section_id}", status_code=204)
+    async def delete_section(request: Request, section_id: str) -> None:
+        await _require_local_mode(request)
+        if not await db(request).delete_local_section(section_id):
+            raise HTTPException(status_code=404, detail="not found")
 
     # ---- backlog ------------------------------------------------------------
 
@@ -219,6 +292,159 @@ def create_app() -> FastAPI:
         assert item is not None
         return _backlog_to_json(item)
 
+    # ---- live Plaky (straight through to Plaky, no cache) ---------------------
+    #
+    # Everything here talks to Plaky on every call: this is the "what Plaky
+    # sees right now" view. The browser polls /api/live/board every ~15s
+    # (Plaky has no webhooks). All of it targets the home board.
+
+    async def _live_target(request: Request) -> tuple[str, str]:
+        home = await get_home_board(db(request))
+        if home is None:
+            raise HTTPException(status_code=409, detail="Pick a Plaky board first (sidebar, board picker).")
+        return home["space_id"], home["board_id"]
+
+    async def _users(client: PlakyClient) -> dict[str, Any]:
+        cache = getattr(app.state, "users_cache", None)
+        if cache and time.monotonic() - cache["at"] < _USERS_TTL_S:
+            return cache["data"]
+        users = await client.list_users()
+        try:
+            me = await client.get_me()
+        except PlakyApiError:
+            me = {}
+        data = {
+            "me": str(me.get("id")) if me.get("id") is not None else None,
+            "names": {str(u.get("id")): (u.get("name") or u.get("fullName") or u.get("email") or "") for u in users},
+        }
+        app.state.users_cache = {"at": time.monotonic(), "data": data}
+        return data
+
+    async def _log_push(request: Request, item_id: str, detail: str) -> None:
+        await db(request).log_sync(direction="push", target=f"plaky:{item_id}", ok=True, detail=detail)
+
+    @app.get("/api/live/board")
+    async def live_board(request: Request) -> dict[str, Any]:
+        space_id, board_id = await _live_target(request)
+        async with _new_client(settings) as client:
+            board = await client.get_board(space_id, board_id)
+            items = await client.list_items_with_fields(space_id, board_id)
+            try:
+                users = await _users(client)  # cached 10 min, so ~free on most polls
+            except PlakyApiError:
+                users = {"me": None, "names": {}}  # names are nice-to-have; never block the board on them
+        groups = sorted(board.get("groups") or [], key=lambda g: g.get("ranking") or "")
+        return {
+            "board": {"id": board.get("id"), "title": board.get("title")},
+            "fields": board.get("fields") or [],
+            "groups": [{"id": str(g["id"]), "title": g.get("title") or "", "color": g.get("color")} for g in groups],
+            "items": [
+                {
+                    "id": str(it["id"]),
+                    "title": it.get("title") or "",
+                    "group_id": _ref_id(it.get("group")),
+                    "ranking": it.get("ranking") or "",
+                    "comment_count": it.get("commentCount") or 0,
+                    "file_count": it.get("fileCount") or 0,
+                    "fields": it.get("fields") or [],
+                }
+                for it in items
+                if not it.get("archived") and not it.get("deleted")
+            ],
+            "people": users["names"],
+            "me": users["me"],
+            "fetched_at": int(time.time()),
+        }
+
+    @app.post("/api/live/items", status_code=201)
+    async def live_create(request: Request, payload: LiveCreateRequest) -> dict[str, Any]:
+        space_id, board_id = await _live_target(request)
+        title = payload.title.strip()
+        async with _new_client(settings) as client:
+            created = await client.create_item(space_id=space_id, board_id=board_id, title=title, group_id=payload.group_id)
+        await _log_push(request, str(created.get("id")), f"created '{title}'")
+        return {"id": str(created.get("id"))}
+
+    @app.patch("/api/live/items/{item_id}/group")
+    async def live_move(request: Request, item_id: str, payload: LiveMoveRequest) -> dict[str, Any]:
+        space_id, board_id = await _live_target(request)
+        async with _new_client(settings) as client:
+            await client.move_item_to_group(
+                space_id=space_id, board_id=board_id, item_id=item_id, group_id=payload.group_id
+            )
+        await _log_push(request, item_id, f"moved to group {payload.group_id}")
+        return {"ok": True}
+
+    @app.patch("/api/live/items/{item_id}/fields/{field_key}")
+    async def live_field(request: Request, item_id: str, field_key: str, payload: LiveFieldRequest) -> dict[str, Any]:
+        space_id, board_id = await _live_target(request)
+        async with _new_client(settings) as client:
+            await client.update_item_field(
+                space_id=space_id,
+                board_id=board_id,
+                item_id=item_id,
+                field_key=quote(field_key, safe=""),
+                value=payload.value,
+            )
+        await _log_push(request, item_id, f"set {field_key}")
+        return {"ok": True}
+
+    @app.get("/api/live/items/{item_id}/activity")
+    async def live_activity(request: Request, item_id: str) -> dict[str, Any]:
+        space_id, board_id = await _live_target(request)
+        async with _new_client(settings) as client:
+            comments = await client.list_comments(space_id, board_id, item_id)
+            files = await client.list_files(space_id, board_id, item_id)
+            users = await _users(client)
+
+        def author(c: dict[str, Any]) -> str | None:
+            return _ref_id(c.get("createdBy"))
+
+        return {
+            "comments": [
+                {
+                    "id": c.get("id"),
+                    "text": c.get("content") or "",
+                    "author": users["names"].get(author(c) or "") or "Someone",
+                    "mine": users["me"] is not None and author(c) == users["me"],
+                    "created_at": c.get("createdAt"),
+                }
+                for c in comments
+                if not c.get("deleted")
+            ],
+            "files": [
+                {"id": f.get("id"), "name": f.get("name") or "file", "size": f.get("size"), "created_at": f.get("createdAt")}
+                for f in files
+            ],
+        }
+
+    @app.post("/api/live/items/{item_id}/comments", status_code=201)
+    async def live_comment(request: Request, item_id: str, payload: LiveCommentRequest) -> dict[str, Any]:
+        space_id, board_id = await _live_target(request)
+        async with _new_client(settings) as client:
+            await client.create_comment(space_id=space_id, board_id=board_id, item_id=item_id, text=payload.text.strip())
+        await _log_push(request, item_id, "commented")
+        return {"ok": True}
+
+    @app.post("/api/live/items/{item_id}/files", status_code=201)
+    async def live_upload(request: Request, item_id: str, file: UploadFile = File(...)) -> dict[str, Any]:
+        space_id, board_id = await _live_target(request)
+        content = await file.read(_MAX_UPLOAD_BYTES + 1)
+        if len(content) > _MAX_UPLOAD_BYTES:
+            raise HTTPException(status_code=413, detail="File is over 50 MB.")
+        name = file.filename or "upload"
+        async with _new_client(settings) as client:
+            await client.upload_file(
+                space_id=space_id,
+                board_id=board_id,
+                item_id=item_id,
+                filename=name,
+                content=content,
+                content_type=file.content_type or "",
+            )
+        await _log_push(request, item_id, f"uploaded {name}")
+        return {"ok": True}
+
     # ---- Plaky cache (browse what's been pulled) -----------------------------
 
     @app.post("/api/sync/pull")
@@ -262,6 +488,13 @@ def create_app() -> FastAPI:
     return app
 
 
+def _ref_id(value: Any) -> str | None:
+    """Plaky returns parents/authors as a bare id, or as an object when expanded."""
+    if isinstance(value, dict):
+        value = value.get("id")
+    return None if value is None else str(value)
+
+
 def _backlog_to_json(item: Any) -> dict[str, Any]:
     return {
         "id": item.id,
@@ -282,7 +515,19 @@ app = create_app()
 
 def main() -> None:
     settings = get_settings()
-    uvicorn.run(app, host=settings.host, port=settings.port)
+    if sys.stdout is None or sys.stderr is None:
+        # pythonw (start_hidden.vbs) has no console: stdout/stderr are None
+        # and uvicorn's log formatter crashes on startup. Log to a file instead.
+        log_path = settings.database_path.parent / "radial.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        sys.stdout = sys.stderr = open(log_path, "a", encoding="utf-8", buffering=1)  # noqa: SIM115
+        logging.getLogger().handlers.clear()
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s", stream=sys.stderr)
+    # Import string, not the `app` object: under `python -m app.main` this
+    # module is `__main__`, and on Python 3.14 + Pydantic 2.13 the request
+    # models defined here then fail to build ("not fully defined"), so every
+    # POST/PATCH 500s. Letting uvicorn import app.main normally avoids that.
+    uvicorn.run("app.main:app", host=settings.host, port=settings.port)
 
 
 if __name__ == "__main__":

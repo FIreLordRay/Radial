@@ -17,10 +17,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.db import Database
+from app.db import LOCAL_SECTION_PREFIX, Database
 from app.plaky_client import PlakyApiError, PlakyClient
 
-__all__ = ["pull_all", "push_backlog_item", "get_home_board", "set_home_board"]
+__all__ = ["pull_all", "push_backlog_item", "get_home_board", "set_home_board", "clear_home_board"]
 
 
 async def pull_all(db: Database, client: PlakyClient) -> dict[str, int]:
@@ -94,15 +94,26 @@ async def set_home_board(db: Database, *, space_id: str, board_id: str) -> None:
     section id that belongs to a different board entirely -- silently
     correct-looking until someone pushes and it lands (or fails to land) in
     the wrong place. Picking the *same* board again is a no-op, not a reset.
+    Going from local sections (no home board) to a board is a change too:
+    local section ids mean nothing to Plaky.
     """
     previous = await get_home_board(db)
-    changed = previous is not None and (previous["space_id"] != space_id or previous["board_id"] != board_id)
+    changed = previous is None or previous["space_id"] != space_id or previous["board_id"] != board_id
 
     await db.set_setting("home_space_id", space_id)
     await db.set_setting("home_board_id", board_id)
 
     if changed:
         await db.clear_all_backlog_groups()
+
+
+async def clear_home_board(db: Database) -> None:
+    """Go back to Radial's own local sections; Plaky group ids stop meaning anything."""
+    if await get_home_board(db) is None:
+        return
+    await db.delete_setting("home_space_id")
+    await db.delete_setting("home_board_id")
+    await db.clear_all_backlog_groups()
 
 
 async def push_backlog_item(db: Database, client: PlakyClient, *, item_id: str) -> None:
@@ -128,6 +139,8 @@ async def push_backlog_item(db: Database, client: PlakyClient, *, item_id: str) 
         raise ValueError("this item is already linked to a Plaky item")
     if not item.group_id:
         raise ValueError("assign this item to a section before pushing")
+    if item.group_id.startswith(LOCAL_SECTION_PREFIX):
+        raise ValueError("this item is in a local section; set a Plaky home board and pick one of its sections")
 
     home = await get_home_board(db)
     if home is None:

@@ -15,6 +15,32 @@ themed in the same Dark Ember palette as `raybot`'s dashboard.
 - A **Plaky browser** view to read anything pulled in, and a **sync log** of every pull/push,
   success or failure.
 
+## Using it
+
+Works with or without Plaky. With no API key it's a plain local kanban:
+
+- Columns start as **To do / In progress / Done**. Double-click a column name to rename it,
+  hover for the x to delete it (its items drop to Unsorted), or **+ Add section**.
+- Type in a column's **+ Add item** box and hit Enter to drop a card straight in.
+- **Drag cards** between columns. Click a card to edit it.
+- Keys: `N` new item, `/` search, `Esc` close/clear, `Enter` (title) or `Ctrl+Enter` saves.
+
+Once a Plaky home board is set, its real sections replace the local ones (the board picker's
+**Use local sections** switches back).
+
+### Plaky (live)
+
+With a key in `.env`, the **Plaky (live)** tab shows your chosen board exactly as Plaky has it,
+re-checked every 15 seconds (Plaky has no webhooks; that's ~8 of its 200 requests/minute).
+From there you can:
+
+- drag items between columns, or add new ones with a column's **+ Add to Plaky** box
+- open an item to edit its fields (status, dates, links, text, tags), hit **Mark done**
+  (sets the board's "final" status, or moves it to a Done-style column), upload files,
+  and read/post comments
+
+Renaming an item still isn't possible through Plaky's API, so do that in Plaky itself.
+
 ## Setup
 
 ```bash
@@ -60,7 +86,9 @@ Everything in `plaky_client.py` is written directly against Plaky's own publishe
 spec (verified before writing any of this, not guessed): base URL `https://api.plaky.com`,
 auth via an `X-API-Key` header, paths under `/v1/public/...`.
 
-**The one honest limitation**: Plaky's public API has no endpoint to rename an item or move
+**Update 2026-10-07**: Plaky has since added endpoints to move an item to another group, comment
+and upload files, all used by the live view. What follows still applies to the *backlog's*
+push. **The original limitation**: Plaky's public API had no endpoint to rename an item or move
 it to a different section after creation — only `PATCH .../items/{id}/fields` to change a
 custom field's *value*. That's why:
 
